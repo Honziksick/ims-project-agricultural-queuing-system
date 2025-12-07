@@ -27,6 +27,10 @@ double TotalGlobalWorkerWages = 0;
 double TotalGlobalMachineCost = 0;
 double TotalGlobalMaterialCost = 0;
 
+// Utilization Accumulators (Manual tracking)
+double TotalTractorHours = 0;
+double TotalSowerHours = 0;
+
 // Pointers for Dynamic Resources
 Store* pTractors = nullptr;
 Store* pMachineMinTill = nullptr;
@@ -63,6 +67,10 @@ struct SimStats {
     int unfinishedFieldsCount;
     int workableDays;
     bool allFieldsFinished;
+
+    // Utilization Stats
+    double avgTractorUtil;
+    double avgSowerUtil;
 };
 
 // --- Helper Functions ---
@@ -78,8 +86,12 @@ void InitLookupArrays() {
     PhaseDurations[PHASE_PLOW] = Defaults::TIME_PREP;
     MachineRequirements[PHASE_PREP] = pMachineFertilizer;
     PhaseDurations[PHASE_PREP] = Defaults::TIME_FERTILIZE;
+    
+    // Note: The phase named 'FERTILIZE' currently maps to Sower Logic in this model
     MachineRequirements[PHASE_FERTILIZE] = pMachineSower;
-    PhaseDurations[PHASE_FERTILIZE] = Defaults::TIME_SOW;
+    // UPDATED: Use the configurable sowing time instead of static default
+    PhaseDurations[PHASE_FERTILIZE] = cfg.sowingTime; 
+    
     MachineRequirements[PHASE_SOWING] = pMachineRoller;
     PhaseDurations[PHASE_SOWING] = Defaults::TIME_ROLL;
     MachineRequirements[PHASE_ROLLING] = nullptr; 
@@ -313,6 +325,16 @@ public:
                 double workTime = std::min(remainingWorkOnField, timeRemainingInShift);
                 Wait(workTime); 
 
+                // --- Utilization Tracking (Manual) ---
+                // Worker always has a tractor here
+                TotalTractorHours += workTime;
+
+                // Check if specific implement is used
+                if (requiredMachine == pMachineSower) {
+                    TotalSowerHours += workTime;
+                }
+                // -------------------------------------
+
                 UpdateFieldEconomics(targetField, workTime, actualTotalDuration);
 
                 timeRemainingInShift -= workTime;
@@ -419,6 +441,8 @@ void WriteFinalReport(std::string filename, const SimStats& stats) {
     file << "Labor Cost:    " << stats.costLabor << " CZK\n";
     file << "Machine Cost:  " << stats.costMachine << " CZK\n";
     file << "Material Cost: " << stats.costMaterial << " CZK\n";
+    file << "  (Includes Chem: " << (Defaults::FIELD_SIZE_HA * cfg.countFields * cfg.costChemicalsPerHa) << ")\n";
+    file << "  (Includes ExtN: " << (Defaults::FIELD_SIZE_HA * cfg.countFields * cfg.costExtraNitrogenPerHa) << ")\n";
     file.close();
 }
 
@@ -430,6 +454,10 @@ SimStats RunSimulation(const SimConfig& runConfig, long seed, std::string report
     TotalGlobalMachineCost = 0;
     TotalGlobalMaterialCost = 0;
     GlobalWorkableDaysCount = 0;
+
+    // Reset Utilization Counters
+    TotalTractorHours = 0;
+    TotalSowerHours = 0;
 
     IsDayWorkable = true;
     TimeAllReadyForSowing = -1.0; 
@@ -467,6 +495,19 @@ SimStats RunSimulation(const SimConfig& runConfig, long seed, std::string report
 
     Run();
 
+    // --- Post-Simulation Cost Calculations (Realistic Additions) ---
+    // Applying "Post-Processing" costs for chemicals and extra fertilization
+    // regardless of whether the field was finished, as these are usually applied early/mid season.
+    for (auto& field : FarmFields) {
+        double chemCost = Defaults::FIELD_SIZE_HA * cfg.costChemicalsPerHa;
+        double nitroCost = Defaults::FIELD_SIZE_HA * cfg.costExtraNitrogenPerHa;
+        
+        double totalExtra = chemCost + nitroCost;
+        
+        field.accumulatedCostCZK += totalExtra;
+        TotalGlobalMaterialCost += totalExtra;
+    }
+
     SimStats stats;
     stats.simEndTime = Time;
     
@@ -501,6 +542,21 @@ SimStats RunSimulation(const SimConfig& runConfig, long seed, std::string report
         stats.daysWaitingForWindow = 0.0;
     }
 
+    // --- Utilization Calculations (Manual) ---
+    // Formula: Total Hours Used / (Total Simulation Time * Number of Machines)
+    
+    if (cfg.countTractors > 0 && Time > 0) {
+        stats.avgTractorUtil = (TotalTractorHours / (Time * cfg.countTractors)) * 100.0;
+    } else {
+        stats.avgTractorUtil = 0.0;
+    }
+
+    if (cfg.countMachineSower > 0 && Time > 0) {
+        stats.avgSowerUtil = (TotalSowerHours / (Time * cfg.countMachineSower)) * 100.0;
+    } else {
+        stats.avgSowerUtil = 0.0;
+    }
+
     if (!reportFilename.empty()) {
         WriteFinalReport(reportFilename, stats);
     }
@@ -529,6 +585,10 @@ void RunBatch(const SimConfig& batchCfg, int iterations, std::string scenarioNam
     double sumUnfinished = 0;
     int successCount = 0;
     double sumWorkableDays = 0;
+
+    // Resource Utilization Accumulators
+    double sumTractorUtil = 0;
+    double sumSowerUtil = 0;
     
     double minProfit = std::numeric_limits<double>::max();
     double maxProfit = std::numeric_limits<double>::lowest();
@@ -554,6 +614,9 @@ void RunBatch(const SimConfig& batchCfg, int iterations, std::string scenarioNam
         sumUnfinished += result.unfinishedFieldsCount;
         sumWorkableDays += result.workableDays;
         
+        sumTractorUtil += result.avgTractorUtil;
+        sumSowerUtil += result.avgSowerUtil;
+
         if (result.allFieldsFinished) successCount++;
 
         if (result.totalProfit < minProfit) minProfit = result.totalProfit;
@@ -564,6 +627,10 @@ void RunBatch(const SimConfig& batchCfg, int iterations, std::string scenarioNam
     csvFile << scenarioName << "," 
             << iterations << "," 
             
+            // New Input Columns (Preserving user's new inputs)
+            << batchCfg.costChemicalsPerHa << ","
+            << batchCfg.costExtraNitrogenPerHa << ","
+
             // Reliability
             << std::fixed << std::setprecision(1) << (successCount * 100.0 / iterations) << "," 
             << std::setprecision(2) << (sumUnfinished / iterations) << "," 
@@ -583,11 +650,17 @@ void RunBatch(const SimConfig& batchCfg, int iterations, std::string scenarioNam
             // Losses (The most important risk metric)
             << (sumLoss / iterations) << "," 
 
+            // Utilization Stats (Added)
+            << std::setprecision(1) << (sumTractorUtil / iterations) << "%,"
+            << (sumSowerUtil / iterations) << "%,"
+
             // Operational
             << std::setprecision(2) << (sumWait / iterations) << "," 
             << (sumWorkableDays / iterations) << ","
             << (sumTime / iterations) // Duration last, as requested
             << "\n";
+            
+    csvFile.flush(); // FORCE WRITE TO DISK
 
     std::cout << "Done.\n";
 }
@@ -601,42 +674,135 @@ int main() {
 
     std::ofstream csvFile("out/test_results.csv");
     
-    // Header CSV
+    // Header CSV (Updated with utilization columns)
     csvFile << "Scenario,Iterations,"
+            << "Input_ChemCost,Input_ExtraN,"
             << "Success Rate (%),Avg Unfinished Fields,"
             << "Avg Profit,Min Profit,Max Profit,"
             << "Avg Revenue,Avg Total Expenses,Avg Labor Cost,Avg Machine Cost,Avg Material Cost,"
             << "Avg Total Loss (Delay+Unfinished),"
+            << "Avg Tractor Util,Avg Sower Util,"
             << "Avg Wait for Window (Days),Avg Workable Days,Avg Duration (Hours)\n";
 
-    int ITERATIONS = 100;
+    int ITERATIONS = 1000;
 
-    // 1. Default Scenario
-    SimConfig defaultCfg; 
-    RunBatch(defaultCfg, ITERATIONS, "Default", csvFile, 1000);
+    // --- 1. Baseline & Bottleneck Identification ---
+    // A: Baseline
+    SimConfig cfgBaseline; 
+    RunBatch(cfgBaseline, ITERATIONS, "A_Baseline", csvFile, 1000);
 
-    // 2. High Capacity (3 Tractors)
-    SimConfig tractorCfg; 
-    tractorCfg.countTractors = 3;
-    RunBatch(tractorCfg, ITERATIONS, "3_Tractors", csvFile, 2000);
+    // B: High Load (8 Fields) - Stress test to find bottlenecks
+    SimConfig cfgHighLoad;
+    cfgHighLoad.countFields = 8;
+    RunBatch(cfgHighLoad, ITERATIONS, "B_High_Load", csvFile, 2000);
 
-    // 3. Bad Weather (20%)
-    SimConfig badWeatherCfg;
-    badWeatherCfg.probWorkableDay = 0.20;
-    RunBatch(badWeatherCfg, ITERATIONS, "Bad_Weather", csvFile, 3000);
-    
-    // 4. Extreme Weather (10%)
-    SimConfig extremeWeatherCfg;
-    extremeWeatherCfg.probWorkableDay = 0.10;
-    RunBatch(extremeWeatherCfg, ITERATIONS, "Extreme_Weather", csvFile, 4000);
+    // --- 2. Sowing Machine Analysis (Addressing Question 1.1) ---
+    // C: Double Sower (2 Machines) - Running on High Load to see if it fixes B
+    SimConfig cfgDoubleSower;
+    cfgDoubleSower.countFields = 8;
+    cfgDoubleSower.countMachineSower = 2;
+    RunBatch(cfgDoubleSower, ITERATIONS, "C_Double_Sower", csvFile, 3000);
 
-    // 5. Two Shifts (Optimized)
-    SimConfig shiftCfg;
-    shiftCfg.countWorkersShift2 = 2; 
-    RunBatch(shiftCfg, ITERATIONS, "Double_Shift", csvFile, 5000);
+    // D: Faster Sower (30% faster) - Running on High Load
+    SimConfig cfgFastSower;
+    cfgFastSower.countFields = 8;
+    cfgFastSower.sowingTime = Defaults::TIME_SOW * 0.7; // 70% of original time
+    RunBatch(cfgFastSower, ITERATIONS, "D_Faster_Sower", csvFile, 4000);
+
+    // --- 3. Line Configuration & Labor (Addressing Labor impact) ---
+    // E: Lean Operation (Cost cutting) - 1 Tractor on standard 4 fields
+    SimConfig cfgLean;
+    cfgLean.countTractors = 1;
+    RunBatch(cfgLean, ITERATIONS, "E_Lean_Ops", csvFile, 5000);
+
+    // F: Heavy Shift (Capacity Boost) - Addressing "prodloužení směny"
+    // Using 8 fields. Increasing Shift 2 workers to match Shift 1, and adding a tractor.
+    SimConfig cfgHeavy;
+    cfgHeavy.countFields = 8;
+    cfgHeavy.countWorkersShift2 = 2; // Equal to shift 1
+    cfgHeavy.countTractors = 3;      // More tractors to support more workers
+    RunBatch(cfgHeavy, ITERATIONS, "F_Heavy_Shift", csvFile, 6000);
+
+    // --- 4. Stochastic Events (Risk Analysis) ---
+    // G: Critical Weather
+    SimConfig cfgWeather;
+    cfgWeather.probWorkableDay = 0.25; // Drastic reduction from 0.40
+    RunBatch(cfgWeather, ITERATIONS, "G_Bad_Weather", csvFile, 7000);
+
+    // H: High Failure Rate (Machine reliability)
+    SimConfig cfgFail;
+    cfgFail.probTractorUnavailable = 0.60; // High probability tractor is gone (and thus worker idle)
+    RunBatch(cfgFail, ITERATIONS, "H_Machine_Fail", csvFile, 8000);
+
+    // --- 5. Min-Till Analysis (The New Bottleneck Question) ---
+    // I: Min-Till High Load
+    // Can Min-Till save the day for 8 fields without buying extra tractors?
+    SimConfig cfgMinTill;
+    cfgMinTill.countFields = 8;
+    cfgMinTill.countMachineMinTill = 1; // Enables Min-Till path (skips plow)
+    RunBatch(cfgMinTill, ITERATIONS, "I_MinTill_HighLoad", csvFile, 9000);
+
+    // J: Min-Till Lean
+    // Can we run 8 fields with just 1 tractor if we skip plowing?
+    SimConfig cfgMinTillLean;
+    cfgMinTillLean.countFields = 8;
+    cfgMinTillLean.countMachineMinTill = 1;
+    cfgMinTillLean.countTractors = 1; 
+    RunBatch(cfgMinTillLean, ITERATIONS, "J_MinTill_Lean", csvFile, 10000);
+
+    // --- 6. Incremental Scaling & Isolation ---
+    // K: Medium Load (6 Fields) - Finding the tipping point between 4 and 8
+    SimConfig cfgMedium;
+    cfgMedium.countFields = 6;
+    RunBatch(cfgMedium, ITERATIONS, "K_Medium_Load", csvFile, 11000);
+
+    // L: Tractor Only Boost (8 Fields) - 3 Tractors, Default Workers
+    SimConfig cfgTractorsOnly;
+    cfgTractorsOnly.countFields = 8;
+    cfgTractorsOnly.countTractors = 3;
+    RunBatch(cfgTractorsOnly, ITERATIONS, "L_More_Tractors", csvFile, 12000);
+
+    // M: Worker Only Boost (8 Fields) - 2 Tractors, Full Shift 2
+    SimConfig cfgWorkersOnly;
+    cfgWorkersOnly.countFields = 8;
+    cfgWorkersOnly.countWorkersShift2 = 2;
+    RunBatch(cfgWorkersOnly, ITERATIONS, "M_More_Workers", csvFile, 13000);
+
+    // --- 7. Resilience Stress Tests ---
+    // N: Heavy Shift vs Bad Weather - Can the "F" config survive 25% weather?
+    SimConfig cfgHeavyWeather;
+    cfgHeavyWeather.countFields = 8;
+    cfgHeavyWeather.countWorkersShift2 = 2;
+    cfgHeavyWeather.countTractors = 3;
+    cfgHeavyWeather.probWorkableDay = 0.25;
+    RunBatch(cfgHeavyWeather, ITERATIONS, "N_Heavy_Resilience", csvFile, 14000);
+
+    // O: Min-Till vs Bad Weather - Is speed the answer to bad weather?
+    SimConfig cfgMinTillWeather;
+    cfgMinTillWeather.countFields = 8;
+    cfgMinTillWeather.countMachineMinTill = 1;
+    cfgMinTillWeather.probWorkableDay = 0.25;
+    RunBatch(cfgMinTillWeather, ITERATIONS, "O_MinTill_Resilience", csvFile, 15000);
+
+    // --- 8. Extreme & Special Cases ---
+    // P: The "Super Farm" - 12 Fields, High Tech, High Labor
+    SimConfig cfgSuperFarm;
+    cfgSuperFarm.countFields = 12;
+    cfgSuperFarm.countTractors = 4;
+    cfgSuperFarm.countWorkersShift2 = 2;
+    cfgSuperFarm.countMachineMinTill = 1; 
+    RunBatch(cfgSuperFarm, ITERATIONS, "P_Super_Farm", csvFile, 16000);
+
+    // Q: Sower Redemption - 8 Fields, Bad Weather, 2 Sowers
+    // Does the extra sower help when the weather window is tiny?
+    SimConfig cfgSowerRedemption;
+    cfgSowerRedemption.countFields = 8;
+    cfgSowerRedemption.probWorkableDay = 0.25;
+    cfgSowerRedemption.countMachineSower = 2;
+    RunBatch(cfgSowerRedemption, ITERATIONS, "Q_Sower_Redemption", csvFile, 17000);
 
     csvFile.close();
-    std::cout << "\nAnalysis Complete. Check 'out/vysledky_komplet.csv' for full details.\n";
+    std::cout << "\nAnalysis Complete. Check 'out/test_results.csv' for full details.\n";
 
     return 0;
 }

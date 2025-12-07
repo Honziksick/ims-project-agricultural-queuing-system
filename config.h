@@ -18,10 +18,16 @@ namespace Defaults {
     const double PRICE_CZK_PER_TONNE = 4800.0;
     const double YIELD_PENALTY_PER_DAY = 0.01;
 
+    // --- Direct Operational Costs ---
     const double COST_WORKER_PER_HOUR = 250.0;
     const double COST_TRACTOR_PER_HOUR = 900.0;
     const double COST_SEED_PER_HA = 2200.0;
     const double COST_FERTILIZER_PER_HA = 3500.0;
+
+    // --- New "Realistic" Post-Process Costs ---
+    // Costs for plant protection (sprays) and additional nutrition not covered by the "Fertilize" phase
+    const double COST_CHEMICALS_PER_HA = 6000.0;      // Herbicides, Fungicides, Insecticides
+    const double COST_EXTRA_NITROGEN_PER_HA = 3000.0; // Top-up fertilization during growth
 
     const int COUNT_WORKERS_SHIFT_1 = 2;
     const int COUNT_WORKERS_SHIFT_2 = 1;
@@ -50,12 +56,11 @@ namespace Defaults {
     const double TIME_PLOW = 15.5 * HOUR;
     const double TIME_PREP = 8.0 * HOUR;
     const double TIME_FERTILIZE = 3.5 * HOUR;
-    const double TIME_SOW = 10.0 * HOUR;
+    const double TIME_SOW = 10.0 * HOUR; // This is the default sowing time
     const double TIME_ROLL = 6.5 * HOUR;
 }
 
 // --- Configuration Struct ---
-// Umožňuje přepsat libovolnou hodnotu pro konkrétní běh
 struct SimConfig {
     double simulationDuration;
     double probWorkableDay;
@@ -79,9 +84,16 @@ struct SimConfig {
     double costWorkerPerHour;
     double costTractorPerHour;
     double priceCzkPerTonne;
+    
+    // New Cost Factors
+    double costChemicalsPerHa;
+    double costExtraNitrogenPerHa;
 
     // Reliability
     double probTractorUnavailable;
+
+    // Operation Durations (Added for Scenario D)
+    double sowingTime;
 
     // Constructor sets defaults
     SimConfig() {
@@ -105,13 +117,18 @@ struct SimConfig {
         costTractorPerHour = Defaults::COST_TRACTOR_PER_HOUR;
         priceCzkPerTonne = Defaults::PRICE_CZK_PER_TONNE;
 
+        // Init new costs
+        costChemicalsPerHa = Defaults::COST_CHEMICALS_PER_HA;
+        costExtraNitrogenPerHa = Defaults::COST_EXTRA_NITROGEN_PER_HA;
+
         probTractorUnavailable = Defaults::PROB_TRACTOR_UNAVAILABLE;
+
+        // Init sowing time
+        sowingTime = Defaults::TIME_SOW;
     }
 };
 
-// Global pointer to the current configuration used by the simulation
 extern SimConfig cfg; 
-// Time constants needed globally
 extern const int NUM_PHASES;
 
 #endif
