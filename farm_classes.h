@@ -2,11 +2,15 @@
 #define FARM_CLASSES_H
 
 #include "simlib.h"
-#include "config.h" // Potřebujeme config pro typy
+#include "config.h"
 #include <string>
 #include <vector>
-#include <iostream>
 #include <map>
+#include <memory>
+
+// ============================================================================
+//  ENUMS & CONSTANTS
+// ============================================================================
 
 enum FieldPhase {
     PHASE_START = 0,
@@ -17,20 +21,18 @@ enum FieldPhase {
     PHASE_FERTILIZE,     
     PHASE_SOWING,        
     PHASE_ROLLING,
-    PHASE_DONE
+    PHASE_DONE,
+    NUM_PHASES // Helper for array sizing
 };
 
 const std::string PhaseNames[] = {
-    "Start",
-    "Min-Till",
-    "Stubble",
-    "Plow",
-    "Prep",
-    "Fertilize",
-    "Sowing",
-    "Rolling",
-    "Done"
+    "Start", "Min-Till", "Stubble", "Plow", "Prep", 
+    "Fertilize", "Sowing", "Rolling", "Done"
 };
+
+// ============================================================================
+//  DOMAIN ENTITIES
+// ============================================================================
 
 struct Field {
     int id;
@@ -39,38 +41,100 @@ struct Field {
     bool isBeingWorkedOn;   
     double workDoneInPhase; 
     
+    // Economic tracking per field
     double accumulatedYieldCZK; 
     double accumulatedCostCZK;  
 
-    Field(int _id) : id(_id), currentPhase(PHASE_START), 
-                     isMinTillPath(false), isBeingWorkedOn(false), 
-                     workDoneInPhase(0), 
-                     accumulatedYieldCZK(0.0), accumulatedCostCZK(0.0) {}
+    Field(int _id) : 
+        id(_id), 
+        currentPhase(PHASE_START), 
+        isMinTillPath(false), 
+        isBeingWorkedOn(false), 
+        workDoneInPhase(0), 
+        accumulatedYieldCZK(0.0), 
+        accumulatedCostCZK(0.0) {}
 };
 
-// --- Globals ---
-extern bool IsDayWorkable;
+struct SimStats {
+    // Financials
+    double totalProfit;
+    double totalRevenue;
+    double maxPotentialRevenue;
+    double totalLoss;
+    
+    // Expenses
+    double costLabor;
+    double costMachine;
+    double costMaterial;
+    double totalExpenses;
 
-// Pointers to Stores (Dynamically allocated based on Config)
-extern Store* pTractors;
-extern Store* pMachineMinTill;
-extern Store* pMachineStubble;
-extern Store* pMachinePlow;
-extern Store* pMachinePrep;
-extern Store* pMachineFertilizer;
-extern Store* pMachineSower;
-extern Store* pMachineRoller;
+    // Operational Metrics
+    double simEndTime;
+    double daysWaitingForWindow; 
+    int unfinishedFieldsCount;
+    int workableDays;
+    bool allFieldsFinished;
 
-// Lookup Arrays
-extern Store* MachineRequirements[9]; 
-extern double PhaseDurations[9];
+    // Utilization (%)
+    double avgTractorUtil;
+    double avgSowerUtil;
+};
 
-extern std::vector<Field> FarmFields;
-extern std::map<int, double> FieldActiveDurations; 
+// ============================================================================
+//  SIMULATION CONTEXT
+// ============================================================================
 
-// Functions
-void AddMaterialCost(Field* field, double costPerHa);
-void LogEvent(std::string actor, std::string action);
-std::string GetFormattedTime(double t);
+/**
+ * Holds the entire dynamic state of one simulation run.
+ * Replaces loose global variables.
+ */
+struct SimulationContext {
+    // Config for this run
+    SimConfig cfg;
 
-#endif
+    // State Variables
+    bool isDayWorkable;
+    double timeAllReadyForSowing;
+    int globalWorkableDaysCount;
+    
+    // Cost Accumulators
+    double totalWorkerWages;
+    double totalMachineCost;
+    double totalMaterialCost;
+
+    // Utilization Accumulators
+    double totalTractorHours;
+    double totalSowerHours;
+
+    // Resources (SIMLIB Stores)
+    Store* pTractors;
+    Store* pMachineMinTill;
+    Store* pMachineStubble;
+    Store* pMachinePlow;
+    Store* pMachinePrep;
+    Store* pMachineFertilizer;
+    Store* pMachineSower;
+    Store* pMachineRoller;
+
+    // Logic Lookups
+    Store* machineRequirements[NUM_PHASES];
+    double phaseDurations[NUM_PHASES];
+
+    // Data containers
+    std::vector<Field> farmFields;
+    std::map<int, double> fieldActiveDurations; 
+
+    // Constructor initializes basics, pointers null until Setup()
+    SimulationContext() : 
+        isDayWorkable(true), 
+        timeAllReadyForSowing(-1.0),
+        globalWorkableDaysCount(0),
+        totalWorkerWages(0), totalMachineCost(0), totalMaterialCost(0),
+        totalTractorHours(0), totalSowerHours(0),
+        pTractors(nullptr), pMachineMinTill(nullptr), pMachineStubble(nullptr),
+        pMachinePlow(nullptr), pMachinePrep(nullptr), pMachineFertilizer(nullptr),
+        pMachineSower(nullptr), pMachineRoller(nullptr) 
+    {}
+};
+
+#endif // FARM_CLASSES_H

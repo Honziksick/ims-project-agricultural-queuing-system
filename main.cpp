@@ -1,6 +1,7 @@
 #include "simlib.h"
 #include "config.h"
 #include "farm_classes.h"
+
 #include <iostream>
 #include <algorithm>
 #include <vector>
@@ -13,91 +14,36 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-// --- Global Definition ---
-SimConfig cfg; 
-const int NUM_PHASES = 9;
-
-// Global Variables (Re-initialized per run)
-bool IsDayWorkable = true;
-double TimeAllReadyForSowing = -1.0; 
-int GlobalWorkableDaysCount = 0;
-
-// Global Cost Accumulators
-double TotalGlobalWorkerWages = 0;
-double TotalGlobalMachineCost = 0;
-double TotalGlobalMaterialCost = 0;
-
-// Utilization Accumulators (Manual tracking)
-double TotalTractorHours = 0;
-double TotalSowerHours = 0;
-
-// Pointers for Dynamic Resources
-Store* pTractors = nullptr;
-Store* pMachineMinTill = nullptr;
-Store* pMachineStubble = nullptr;
-Store* pMachinePlow = nullptr;
-Store* pMachinePrep = nullptr;
-Store* pMachineFertilizer = nullptr;
-Store* pMachineSower = nullptr;
-Store* pMachineRoller = nullptr;
-
-Store* MachineRequirements[NUM_PHASES];
-double PhaseDurations[NUM_PHASES];
-
-std::vector<Field> FarmFields;
-std::map<int, double> FieldActiveDurations; 
+// RNG Generator
 std::mt19937 cpp_gen(12345);
 
-struct SimStats {
-    // Totals
-    double totalProfit;
-    double totalRevenue;
-    double maxPotentialRevenue;
-    double totalLoss;
+// ============================================================================
+//  HELPER FUNCTIONS
+// ============================================================================
+
+void InitLookupArrays(SimulationContext& ctx) {
+    // Reset pointers
+    for(int i=0; i<NUM_PHASES; ++i) ctx.machineRequirements[i] = nullptr;
+
+    // Mapping Phases to Machines
+    ctx.machineRequirements[PHASE_MIN_TILL]  = ctx.pMachineFertilizer; // Assuming logic from original code
+    ctx.phaseDurations[PHASE_MIN_TILL]       = Defaults::TIME_FERTILIZE; 
+
+    ctx.machineRequirements[PHASE_STUBBLE]   = ctx.pMachinePlow;
+    ctx.phaseDurations[PHASE_STUBBLE]        = Defaults::TIME_PLOW;
     
-    // Expenses
-    double costLabor;
-    double costMachine;
-    double costMaterial;
-    double totalExpenses;
-
-    // Operation
-    double simEndTime;
-    double daysWaitingForWindow; 
-    int unfinishedFieldsCount;
-    int workableDays;
-    bool allFieldsFinished;
-
-    // Utilization Stats
-    double avgTractorUtil;
-    double avgSowerUtil;
-};
-
-// --- Helper Functions ---
-
-void InitLookupArrays() {
-    MachineRequirements[PHASE_START] = nullptr; 
-    PhaseDurations[PHASE_START] = 0;
-    MachineRequirements[PHASE_MIN_TILL] = pMachineFertilizer; 
-    PhaseDurations[PHASE_MIN_TILL] = Defaults::TIME_FERTILIZE; 
-    MachineRequirements[PHASE_STUBBLE] = pMachinePlow;
-    PhaseDurations[PHASE_STUBBLE] = Defaults::TIME_PLOW;
-    MachineRequirements[PHASE_PLOW] = pMachinePrep;
-    PhaseDurations[PHASE_PLOW] = Defaults::TIME_PREP;
-    MachineRequirements[PHASE_PREP] = pMachineFertilizer;
-    PhaseDurations[PHASE_PREP] = Defaults::TIME_FERTILIZE;
+    ctx.machineRequirements[PHASE_PLOW]      = ctx.pMachinePrep;
+    ctx.phaseDurations[PHASE_PLOW]           = Defaults::TIME_PREP;
+    
+    ctx.machineRequirements[PHASE_PREP]      = ctx.pMachineFertilizer;
+    ctx.phaseDurations[PHASE_PREP]           = Defaults::TIME_FERTILIZE;
     
     // Note: The phase named 'FERTILIZE' currently maps to Sower Logic in this model
-    MachineRequirements[PHASE_FERTILIZE] = pMachineSower;
-    // UPDATED: Use the configurable sowing time instead of static default
-    PhaseDurations[PHASE_FERTILIZE] = cfg.sowingTime; 
+    ctx.machineRequirements[PHASE_FERTILIZE] = ctx.pMachineSower;
+    ctx.phaseDurations[PHASE_FERTILIZE]      = ctx.cfg.sowingTime; 
     
-    MachineRequirements[PHASE_SOWING] = pMachineRoller;
-    PhaseDurations[PHASE_SOWING] = Defaults::TIME_ROLL;
-    MachineRequirements[PHASE_ROLLING] = nullptr; 
-    PhaseDurations[PHASE_ROLLING] = 0;
-    MachineRequirements[PHASE_DONE] = nullptr;
-    PhaseDurations[PHASE_DONE] = 0;
+    ctx.machineRequirements[PHASE_SOWING]    = ctx.pMachineRoller;
+    ctx.phaseDurations[PHASE_SOWING]         = Defaults::TIME_ROLL;
 }
 
 double RandomBeta(double alpha, double beta) {
@@ -119,11 +65,11 @@ double GetOperationTime(double meanTime) {
     return minTime + beta_val * (maxTime - minTime);
 }
 
-double GetPersistentDuration(int fieldId, double meanTime) {
-    if (FieldActiveDurations.find(fieldId) == FieldActiveDurations.end()) {
-        FieldActiveDurations[fieldId] = GetOperationTime(meanTime);
+double GetPersistentDuration(SimulationContext& ctx, int fieldId, double meanTime) {
+    if (ctx.fieldActiveDurations.find(fieldId) == ctx.fieldActiveDurations.end()) {
+        ctx.fieldActiveDurations[fieldId] = GetOperationTime(meanTime);
     }
-    return FieldActiveDurations[fieldId];
+    return ctx.fieldActiveDurations[fieldId];
 }
 
 std::string GetFormattedTime(double t) {
@@ -136,42 +82,38 @@ std::string GetFormattedTime(double t) {
     return std::string(buffer);
 }
 
-void LogEvent(std::string actor, std::string action) {
-    // Logging disabled for batch runs
-}
-
-void AddMaterialCost(Field* field, double costPerHa) {
+void AddMaterialCost(SimulationContext& ctx, Field* field, double costPerHa) {
     double cost = Defaults::FIELD_SIZE_HA * costPerHa;
     field->accumulatedCostCZK += cost;
-    TotalGlobalMaterialCost += cost;
+    ctx.totalMaterialCost += cost;
 }
 
-void UpdateFieldEconomics(Field* field, double workTime, double actualTotalDuration) {
+void UpdateFieldEconomics(SimulationContext& ctx, Field* field, double workTime, double actualTotalDuration) {
     if (field->currentPhase == PHASE_FERTILIZE) {
-        double maxTotalValue = Defaults::FIELD_SIZE_HA * Defaults::YIELD_TONNES_PER_HA * cfg.priceCzkPerTonne;
+        double maxTotalValue = Defaults::FIELD_SIZE_HA * Defaults::YIELD_TONNES_PER_HA * ctx.cfg.priceCzkPerTonne;
         double daysLate = 0.0;
         if (Time > Defaults::LATE_SOWING_TIME) {
             daysLate = (Time - Defaults::LATE_SOWING_TIME) / Defaults::DAY;
         }
         double penaltyFactor = 1.0 - (daysLate * Defaults::YIELD_PENALTY_PER_DAY);
         if (penaltyFactor < 0) penaltyFactor = 0;
+        
         double workFraction = workTime / actualTotalDuration; 
         double valueAdded = maxTotalValue * workFraction * penaltyFactor;
         field->accumulatedYieldCZK += valueAdded;
     }
 
     // Cost calculations
-    double workerCost = workTime * cfg.costWorkerPerHour; // Note: Worker cost is tracked in TotalGlobalWorkerWages
-    double machineCost = workTime * cfg.costTractorPerHour;
+    double workerCost = workTime * ctx.cfg.costWorkerPerHour; // Tracked globally in totalWorkerWages
+    double machineCost = workTime * ctx.cfg.costTractorPerHour;
     
     field->accumulatedCostCZK += (workerCost + machineCost);
-    
-    TotalGlobalMachineCost += machineCost;
+    ctx.totalMachineCost += machineCost;
 }
 
-void CheckSimulationEnd() {
+void CheckSimulationEnd(SimulationContext& ctx) {
     bool allDone = true;
-    for (const auto& field : FarmFields) {
+    for (const auto& field : ctx.farmFields) {
         if (field.currentPhase != PHASE_DONE) {
             allDone = false;
             break;
@@ -182,11 +124,11 @@ void CheckSimulationEnd() {
     }
 }
 
-void CheckIfAllReadyForSowing() {
-    if (TimeAllReadyForSowing != -1.0) return; 
+void CheckIfAllReadyForSowing(SimulationContext& ctx) {
+    if (ctx.timeAllReadyForSowing != -1.0) return; 
 
     bool allReady = true;
-    for (const auto& f : FarmFields) {
+    for (const auto& f : ctx.farmFields) {
         if (f.currentPhase < PHASE_SOWING) {
             allReady = false;
             break;
@@ -194,13 +136,13 @@ void CheckIfAllReadyForSowing() {
     }
 
     if (allReady) {
-        TimeAllReadyForSowing = Time;
+        ctx.timeAllReadyForSowing = Time;
     }
 }
 
-bool FindBestJob(Field*& outField, Store*& outMachine, double& outDuration) {
+bool FindBestJob(SimulationContext& ctx, Field*& outField, Store*& outMachine, double& outDuration) {
     std::vector<Field*> candidates;
-    for (auto& field : FarmFields) {
+    for (auto& field : ctx.farmFields) {
         if (field.currentPhase == PHASE_DONE) continue;
         if (field.isBeingWorkedOn) continue; 
         if (field.currentPhase == PHASE_SOWING && Time < Defaults::SOWING_START_TIME) continue; 
@@ -209,6 +151,7 @@ bool FindBestJob(Field*& outField, Store*& outMachine, double& outDuration) {
 
     if (candidates.empty()) return false;
 
+    // Prioritize older phases (FIFO logic basically)
     std::sort(candidates.begin(), candidates.end(), [](Field* a, Field* b) {
         return a->currentPhase < b->currentPhase;
     });
@@ -218,21 +161,21 @@ bool FindBestJob(Field*& outField, Store*& outMachine, double& outDuration) {
         double duration = 0;
 
         if (field->currentPhase == PHASE_START) {
-            if (pMachineMinTill->Capacity() > 0) {
+            if (ctx.pMachineMinTill->Capacity() > 0) {
                  field->isMinTillPath = true;
-                 potentialMachine = pMachineMinTill;
+                 potentialMachine = ctx.pMachineMinTill;
                  duration = Defaults::TIME_MIN_TILL;
             } else {
                 field->isMinTillPath = false;
-                potentialMachine = pMachineStubble;
+                potentialMachine = ctx.pMachineStubble;
                 duration = Defaults::TIME_STUBBLE;
             }
         }
         else {
             int phaseIndex = (int)field->currentPhase;
             if (phaseIndex >= 0 && phaseIndex < NUM_PHASES) {
-                potentialMachine = MachineRequirements[phaseIndex];
-                duration = PhaseDurations[phaseIndex];
+                potentialMachine = ctx.machineRequirements[phaseIndex];
+                duration = ctx.phaseDurations[phaseIndex];
             }
         }
 
@@ -246,16 +189,22 @@ bool FindBestJob(Field*& outField, Store*& outMachine, double& outDuration) {
     return false;
 }
 
-// --- Processes ---
+// ============================================================================
+//  PROCESSES
+// ============================================================================
 
 class WeatherController : public Process {
-    void Behavior() {
+    SimulationContext& ctx;
+public:
+    WeatherController(SimulationContext& context) : ctx(context) {}
+    
+    void Behavior() override {
         while(true) {
-            if (Random() < cfg.probWorkableDay) {
-                IsDayWorkable = true;
-                GlobalWorkableDaysCount++;
+            if (Random() < ctx.cfg.probWorkableDay) {
+                ctx.isDayWorkable = true;
+                ctx.globalWorkableDaysCount++;
             } else {
-                IsDayWorkable = false;
+                ctx.isDayWorkable = false;
             }
             Wait(24.0 * Defaults::HOUR);
         }
@@ -265,29 +214,31 @@ class WeatherController : public Process {
 class Worker : public Process {
     int workerId;
     int shiftType; 
+    SimulationContext& ctx;
 
 public:
-    Worker(int id, int shift) : workerId(id), shiftType(shift) {}
+    Worker(int id, int shift, SimulationContext& context) 
+        : workerId(id), shiftType(shift), ctx(context) {}
 
-    void Behavior() {
+    void Behavior() override {
         if (shiftType == 2) {
             Wait(Defaults::SHIFT_2_START_OFFSET);
         }
 
         while(true) {
-            TotalGlobalWorkerWages += Defaults::SHIFT_DURATION * cfg.costWorkerPerHour;
+            ctx.totalWorkerWages += Defaults::SHIFT_DURATION * ctx.cfg.costWorkerPerHour;
 
-            if (!IsDayWorkable) {
+            if (!ctx.isDayWorkable) {
                 Wait(Defaults::SHIFT_DURATION);
             } 
             else {
-                bool tractorPhysicallyAvailable = (Random() >= cfg.probTractorUnavailable);
+                bool tractorPhysicallyAvailable = (Random() >= ctx.cfg.probTractorUnavailable);
 
                 if (tractorPhysicallyAvailable) {
-                    if (pTractors->Free() > 0) {
-                        Enter(*pTractors, 1);
+                    if (ctx.pTractors->Free() > 0) {
+                        Enter(*ctx.pTractors, 1);
                         PerformFarmWork();
-                        Leave(*pTractors, 1);
+                        Leave(*ctx.pTractors, 1);
                     } else {
                          Wait(Defaults::SHIFT_DURATION);
                     }
@@ -313,44 +264,42 @@ public:
             Store* requiredMachine = nullptr;
             double operationFullMeanDuration = 0;
 
-            if (FindBestJob(targetField, requiredMachine, operationFullMeanDuration)) {
+            if (FindBestJob(ctx, targetField, requiredMachine, operationFullMeanDuration)) {
                 
                 targetField->isBeingWorkedOn = true;
                 Enter(*requiredMachine, 1);
 
-                double actualTotalDuration = GetPersistentDuration(targetField->id, operationFullMeanDuration);
+                double actualTotalDuration = GetPersistentDuration(ctx, targetField->id, operationFullMeanDuration);
                 double remainingWorkOnField = actualTotalDuration - targetField->workDoneInPhase;
                 if (remainingWorkOnField < 0) remainingWorkOnField = 0.1; 
 
                 double workTime = std::min(remainingWorkOnField, timeRemainingInShift);
                 Wait(workTime); 
 
-                // --- Utilization Tracking (Manual) ---
-                // Worker always has a tractor here
-                TotalTractorHours += workTime;
-
-                // Check if specific implement is used
-                if (requiredMachine == pMachineSower) {
-                    TotalSowerHours += workTime;
+                // --- Utilization Tracking ---
+                ctx.totalTractorHours += workTime;
+                if (requiredMachine == ctx.pMachineSower) {
+                    ctx.totalSowerHours += workTime;
                 }
-                // -------------------------------------
 
-                UpdateFieldEconomics(targetField, workTime, actualTotalDuration);
+                UpdateFieldEconomics(ctx, targetField, workTime, actualTotalDuration);
 
                 timeRemainingInShift -= workTime;
                 targetField->workDoneInPhase += workTime;
 
+                // Job Completion
                 if (targetField->workDoneInPhase >= (remainingWorkOnField - 0.01)) {
                     targetField->workDoneInPhase = 0; 
-                    FieldActiveDurations.erase(targetField->id);
+                    ctx.fieldActiveDurations.erase(targetField->id);
 
                     if (targetField->currentPhase == PHASE_PREP || targetField->currentPhase == PHASE_MIN_TILL) {
-                        AddMaterialCost(targetField, Defaults::COST_FERTILIZER_PER_HA);
+                        AddMaterialCost(ctx, targetField, Defaults::COST_FERTILIZER_PER_HA);
                     }
                     if (targetField->currentPhase == PHASE_FERTILIZE) {
-                         AddMaterialCost(targetField, Defaults::COST_SEED_PER_HA);
+                         AddMaterialCost(ctx, targetField, Defaults::COST_SEED_PER_HA);
                     }
 
+                    // Phase Transition Logic
                     if (targetField->currentPhase == PHASE_START) {
                         targetField->currentPhase = targetField->isMinTillPath ? PHASE_MIN_TILL : PHASE_STUBBLE;
                     } 
@@ -359,13 +308,13 @@ public:
                     }
                     else if (targetField->currentPhase == PHASE_SOWING) { 
                         targetField->currentPhase = PHASE_DONE;
-                        CheckSimulationEnd();
+                        CheckSimulationEnd(ctx);
                     }
                     else {
                         targetField->currentPhase = static_cast<FieldPhase>(targetField->currentPhase + 1);
                     }
                     
-                    CheckIfAllReadyForSowing();
+                    CheckIfAllReadyForSowing(ctx);
                 }
 
                 Leave(*requiredMachine, 1);
@@ -379,20 +328,22 @@ public:
     }
 };
 
-// --- Execution Logic ---
+// ============================================================================
+//  MANAGEMENT
+// ============================================================================
 
-void CleanupResources() {
-    delete pTractors;
-    delete pMachineMinTill;
-    delete pMachineStubble;
-    delete pMachinePlow;
-    delete pMachinePrep;
-    delete pMachineFertilizer;
-    delete pMachineSower;
-    delete pMachineRoller;
+void CleanupResources(SimulationContext& ctx) {
+    delete ctx.pTractors;
+    delete ctx.pMachineMinTill;
+    delete ctx.pMachineStubble;
+    delete ctx.pMachinePlow;
+    delete ctx.pMachinePrep;
+    delete ctx.pMachineFertilizer;
+    delete ctx.pMachineSower;
+    delete ctx.pMachineRoller;
 }
 
-void WriteFinalReport(std::string filename, const SimStats& stats) {
+void WriteFinalReport(const SimulationContext& ctx, std::string filename, const SimStats& stats) {
     std::ofstream file(filename);
     if (!file.is_open()) return;
 
@@ -411,10 +362,10 @@ void WriteFinalReport(std::string filename, const SimStats& stats) {
     double totalExp = 0;
     double totalProfit = 0;
 
-    for (const auto& f : FarmFields) {
+    for (const auto& f : ctx.farmFields) {
         std::string status = PhaseNames[f.currentPhase];
         
-        double maxRev = Defaults::FIELD_SIZE_HA * Defaults::YIELD_TONNES_PER_HA * cfg.priceCzkPerTonne;
+        double maxRev = Defaults::FIELD_SIZE_HA * Defaults::YIELD_TONNES_PER_HA * ctx.cfg.priceCzkPerTonne;
         double loss = maxRev - f.accumulatedYieldCZK;
         double profit = f.accumulatedYieldCZK - f.accumulatedCostCZK;
         double margin = (f.accumulatedYieldCZK > 0) ? (profit / f.accumulatedYieldCZK) * 100.0 : -100.0;
@@ -441,71 +392,60 @@ void WriteFinalReport(std::string filename, const SimStats& stats) {
     file << "Labor Cost:    " << stats.costLabor << " CZK\n";
     file << "Machine Cost:  " << stats.costMachine << " CZK\n";
     file << "Material Cost: " << stats.costMaterial << " CZK\n";
-    file << "  (Includes Chem: " << (Defaults::FIELD_SIZE_HA * cfg.countFields * cfg.costChemicalsPerHa) << ")\n";
-    file << "  (Includes ExtN: " << (Defaults::FIELD_SIZE_HA * cfg.countFields * cfg.costExtraNitrogenPerHa) << ")\n";
+    file << "  (Includes Chem: " << (Defaults::FIELD_SIZE_HA * ctx.cfg.countFields * ctx.cfg.costChemicalsPerHa) << ")\n";
+    file << "  (Includes ExtN: " << (Defaults::FIELD_SIZE_HA * ctx.cfg.countFields * ctx.cfg.costExtraNitrogenPerHa) << ")\n";
     file.close();
 }
 
 SimStats RunSimulation(const SimConfig& runConfig, long seed, std::string reportFilename = "") {
-    cfg = runConfig;
+    SimulationContext ctx;
+    ctx.cfg = runConfig;
     
-    // Reset Globals
-    TotalGlobalWorkerWages = 0;
-    TotalGlobalMachineCost = 0;
-    TotalGlobalMaterialCost = 0;
-    GlobalWorkableDaysCount = 0;
-
-    // Reset Utilization Counters
-    TotalTractorHours = 0;
-    TotalSowerHours = 0;
-
-    IsDayWorkable = true;
-    TimeAllReadyForSowing = -1.0; 
-    FarmFields.clear();
-    FieldActiveDurations.clear();
-    
-    Init(0, cfg.simulationDuration); 
+    Init(0, ctx.cfg.simulationDuration); 
     
     cpp_gen.seed(seed);
     RandomSeed(seed);
 
-    pTractors = new Store("Tractors", cfg.countTractors);
-    pMachineMinTill = new Store("MinTill", cfg.countMachineMinTill);
-    pMachineStubble = new Store("Stubble", cfg.countMachineStubble);
-    pMachinePlow = new Store("Plow", cfg.countMachinePlow);
-    pMachinePrep = new Store("Prep", cfg.countMachinePrep);
-    pMachineFertilizer = new Store("Fertilizer", cfg.countMachineFertilizer);
-    pMachineSower = new Store("Sower", cfg.countMachineSower);
-    pMachineRoller = new Store("Roller", cfg.countMachineRoller);
+    // Initialize Resources
+    ctx.pTractors          = new Store("Tractors", ctx.cfg.countTractors);
+    ctx.pMachineMinTill    = new Store("MinTill", ctx.cfg.countMachineMinTill);
+    ctx.pMachineStubble    = new Store("Stubble", ctx.cfg.countMachineStubble);
+    ctx.pMachinePlow       = new Store("Plow", ctx.cfg.countMachinePlow);
+    ctx.pMachinePrep       = new Store("Prep", ctx.cfg.countMachinePrep);
+    ctx.pMachineFertilizer = new Store("Fertilizer", ctx.cfg.countMachineFertilizer);
+    ctx.pMachineSower      = new Store("Sower", ctx.cfg.countMachineSower);
+    ctx.pMachineRoller     = new Store("Roller", ctx.cfg.countMachineRoller);
 
-    InitLookupArrays(); 
+    InitLookupArrays(ctx); 
 
-    for (int i = 0; i < cfg.countFields; i++) {
-        FarmFields.push_back(Field(i+1));
+    // Initialize Fields
+    for (int i = 0; i < ctx.cfg.countFields; i++) {
+        ctx.farmFields.push_back(Field(i+1));
     }
 
-    (new WeatherController)->Activate();
+    // Activate Processes
+    (new WeatherController(ctx))->Activate();
 
-    for (int i = 0; i < cfg.countWorkersShift1; i++) {
-        (new Worker(i+1, 1))->Activate();
+    for (int i = 0; i < ctx.cfg.countWorkersShift1; i++) {
+        (new Worker(i+1, 1, ctx))->Activate();
     }
-    for (int i = 0; i < cfg.countWorkersShift2; i++) {
-        (new Worker(100 + i + 1, 2))->Activate(); 
+    for (int i = 0; i < ctx.cfg.countWorkersShift2; i++) {
+        (new Worker(100 + i + 1, 2, ctx))->Activate(); 
     }
 
+    // Run Simulation
     Run();
 
-    // --- Post-Simulation Cost Calculations (Realistic Additions) ---
-    // Applying "Post-Processing" costs for chemicals and extra fertilization
-    // regardless of whether the field was finished, as these are usually applied early/mid season.
-    for (auto& field : FarmFields) {
-        double chemCost = Defaults::FIELD_SIZE_HA * cfg.costChemicalsPerHa;
-        double nitroCost = Defaults::FIELD_SIZE_HA * cfg.costExtraNitrogenPerHa;
-        
+    // --- Post-Simulation Processing ---
+    
+    // Apply "Post-Processing" costs (chemicals, extra N)
+    for (auto& field : ctx.farmFields) {
+        double chemCost = Defaults::FIELD_SIZE_HA * ctx.cfg.costChemicalsPerHa;
+        double nitroCost = Defaults::FIELD_SIZE_HA * ctx.cfg.costExtraNitrogenPerHa;
         double totalExtra = chemCost + nitroCost;
         
         field.accumulatedCostCZK += totalExtra;
-        TotalGlobalMaterialCost += totalExtra;
+        ctx.totalMaterialCost += totalExtra;
     }
 
     SimStats stats;
@@ -516,9 +456,9 @@ SimStats RunSimulation(const SimConfig& runConfig, long seed, std::string report
     stats.unfinishedFieldsCount = 0;
     stats.allFieldsFinished = true;
 
-    for(const auto& f : FarmFields) {
+    for(const auto& f : ctx.farmFields) {
         stats.totalRevenue += f.accumulatedYieldCZK;
-        stats.maxPotentialRevenue += Defaults::FIELD_SIZE_HA * Defaults::YIELD_TONNES_PER_HA * cfg.priceCzkPerTonne;
+        stats.maxPotentialRevenue += Defaults::FIELD_SIZE_HA * Defaults::YIELD_TONNES_PER_HA * ctx.cfg.priceCzkPerTonne;
         
         if(f.currentPhase != PHASE_DONE) {
             stats.allFieldsFinished = false;
@@ -528,40 +468,38 @@ SimStats RunSimulation(const SimConfig& runConfig, long seed, std::string report
     
     stats.totalLoss = stats.maxPotentialRevenue - stats.totalRevenue;
 
-    stats.costLabor = TotalGlobalWorkerWages;
-    stats.costMachine = TotalGlobalMachineCost;
-    stats.costMaterial = TotalGlobalMaterialCost;
+    stats.costLabor = ctx.totalWorkerWages;
+    stats.costMachine = ctx.totalMachineCost;
+    stats.costMaterial = ctx.totalMaterialCost;
     stats.totalExpenses = stats.costLabor + stats.costMachine + stats.costMaterial;
     
     stats.totalProfit = stats.totalRevenue - stats.totalExpenses; 
-    stats.workableDays = GlobalWorkableDaysCount;
+    stats.workableDays = ctx.globalWorkableDaysCount;
 
-    if (TimeAllReadyForSowing != -1.0 && TimeAllReadyForSowing < Defaults::SOWING_START_TIME) {
-        stats.daysWaitingForWindow = (Defaults::SOWING_START_TIME - TimeAllReadyForSowing) / Defaults::DAY;
+    if (ctx.timeAllReadyForSowing != -1.0 && ctx.timeAllReadyForSowing < Defaults::SOWING_START_TIME) {
+        stats.daysWaitingForWindow = (Defaults::SOWING_START_TIME - ctx.timeAllReadyForSowing) / Defaults::DAY;
     } else {
         stats.daysWaitingForWindow = 0.0;
     }
 
-    // --- Utilization Calculations (Manual) ---
-    // Formula: Total Hours Used / (Total Simulation Time * Number of Machines)
-    
-    if (cfg.countTractors > 0 && Time > 0) {
-        stats.avgTractorUtil = (TotalTractorHours / (Time * cfg.countTractors)) * 100.0;
+    // Utilization Logic
+    if (ctx.cfg.countTractors > 0 && Time > 0) {
+        stats.avgTractorUtil = (ctx.totalTractorHours / (Time * ctx.cfg.countTractors)) * 100.0;
     } else {
         stats.avgTractorUtil = 0.0;
     }
 
-    if (cfg.countMachineSower > 0 && Time > 0) {
-        stats.avgSowerUtil = (TotalSowerHours / (Time * cfg.countMachineSower)) * 100.0;
+    if (ctx.cfg.countMachineSower > 0 && Time > 0) {
+        stats.avgSowerUtil = (ctx.totalSowerHours / (Time * ctx.cfg.countMachineSower)) * 100.0;
     } else {
         stats.avgSowerUtil = 0.0;
     }
 
     if (!reportFilename.empty()) {
-        WriteFinalReport(reportFilename, stats);
+        WriteFinalReport(ctx, reportFilename, stats);
     }
 
-    CleanupResources();
+    CleanupResources(ctx);
     return stats;
 }
 
@@ -570,25 +508,13 @@ void RunBatch(const SimConfig& batchCfg, int iterations, std::string scenarioNam
     std::cout.flush();
 
     // Accumulators for averages
-    double sumProfit = 0;
-    double sumRevenue = 0;
-    double sumExpenses = 0;
-    
-    double sumCostLabor = 0;
-    double sumCostMachine = 0;
-    double sumCostMaterial = 0;
-    
+    double sumProfit = 0, sumRevenue = 0, sumExpenses = 0;
+    double sumCostLabor = 0, sumCostMachine = 0, sumCostMaterial = 0;
     double sumLoss = 0;
-    
-    double sumTime = 0;
-    double sumWait = 0;
-    double sumUnfinished = 0;
-    int successCount = 0;
+    double sumTime = 0, sumWait = 0, sumUnfinished = 0;
     double sumWorkableDays = 0;
-
-    // Resource Utilization Accumulators
-    double sumTractorUtil = 0;
-    double sumSowerUtil = 0;
+    double sumTractorUtil = 0, sumSowerUtil = 0;
+    int successCount = 0;
     
     double minProfit = std::numeric_limits<double>::max();
     double maxProfit = std::numeric_limits<double>::lowest();
@@ -647,34 +573,33 @@ void RunBatch(const SimConfig& batchCfg, int iterations, std::string scenarioNam
             << (sumCostMachine / iterations) << "," 
             << (sumCostMaterial / iterations) << "," 
             
-            // Losses (The most important risk metric)
+            // Losses
             << (sumLoss / iterations) << "," 
 
-            // Utilization Stats (Added)
+            // Utilization Stats
             << std::setprecision(1) << (sumTractorUtil / iterations) << "%,"
             << (sumSowerUtil / iterations) << "%,"
 
             // Operational
             << std::setprecision(2) << (sumWait / iterations) << "," 
             << (sumWorkableDays / iterations) << ","
-            << (sumTime / iterations) // Duration last, as requested
+            << (sumTime / iterations)
             << "\n";
             
-    csvFile.flush(); // FORCE WRITE TO DISK
+    csvFile.flush(); 
 
     std::cout << "Done.\n";
 }
 
 int main() {
     mkdir("out", 0777);
-
     SetOutput("out/internal_simlib.log"); 
 
     std::cout << "--- Starting Detailed Batch Analysis ---" << std::endl;
 
     std::ofstream csvFile("out/test_results.csv");
     
-    // Header CSV (Updated with utilization columns)
+    // CSV Header
     csvFile << "Scenario,Iterations,"
             << "Input_ChemCost,Input_ExtraN,"
             << "Success Rate (%),Avg Unfinished Fields,"
@@ -687,89 +612,79 @@ int main() {
     int ITERATIONS = 1000;
 
     // --- 1. Baseline & Bottleneck Identification ---
-    // A: Baseline
+    
     SimConfig cfgBaseline; 
     RunBatch(cfgBaseline, ITERATIONS, "A_Baseline", csvFile, 1000);
 
-    // B: High Load (8 Fields) - Stress test to find bottlenecks
     SimConfig cfgHighLoad;
     cfgHighLoad.countFields = 8;
     RunBatch(cfgHighLoad, ITERATIONS, "B_High_Load", csvFile, 2000);
 
-    // --- 2. Sowing Machine Analysis (Addressing Question 1.1) ---
-    // C: Double Sower (2 Machines) - Running on High Load to see if it fixes B
+    // --- 2. Sowing Machine Analysis ---
+    
     SimConfig cfgDoubleSower;
     cfgDoubleSower.countFields = 8;
     cfgDoubleSower.countMachineSower = 2;
     RunBatch(cfgDoubleSower, ITERATIONS, "C_Double_Sower", csvFile, 3000);
 
-    // D: Faster Sower (30% faster) - Running on High Load
     SimConfig cfgFastSower;
     cfgFastSower.countFields = 8;
-    cfgFastSower.sowingTime = Defaults::TIME_SOW * 0.7; // 70% of original time
+    cfgFastSower.sowingTime = Defaults::TIME_SOW * 0.7; 
     RunBatch(cfgFastSower, ITERATIONS, "D_Faster_Sower", csvFile, 4000);
 
-    // --- 3. Line Configuration & Labor (Addressing Labor impact) ---
-    // E: Lean Operation (Cost cutting) - 1 Tractor on standard 4 fields
+    // --- 3. Line Configuration & Labor ---
+    
     SimConfig cfgLean;
     cfgLean.countTractors = 1;
     RunBatch(cfgLean, ITERATIONS, "E_Lean_Ops", csvFile, 5000);
 
-    // F: Heavy Shift (Capacity Boost) - Addressing "prodloužení směny"
-    // Using 8 fields. Increasing Shift 2 workers to match Shift 1, and adding a tractor.
     SimConfig cfgHeavy;
     cfgHeavy.countFields = 8;
-    cfgHeavy.countWorkersShift2 = 2; // Equal to shift 1
-    cfgHeavy.countTractors = 3;      // More tractors to support more workers
+    cfgHeavy.countWorkersShift2 = 2; 
+    cfgHeavy.countTractors = 3;      
     RunBatch(cfgHeavy, ITERATIONS, "F_Heavy_Shift", csvFile, 6000);
 
     // --- 4. Stochastic Events (Risk Analysis) ---
-    // G: Critical Weather
+    
     SimConfig cfgWeather;
-    cfgWeather.probWorkableDay = 0.25; // Drastic reduction from 0.40
+    cfgWeather.probWorkableDay = 0.25; 
     RunBatch(cfgWeather, ITERATIONS, "G_Bad_Weather", csvFile, 7000);
 
-    // H: High Failure Rate (Machine reliability)
     SimConfig cfgFail;
-    cfgFail.probTractorUnavailable = 0.60; // High probability tractor is gone (and thus worker idle)
+    cfgFail.probTractorUnavailable = 0.60; 
     RunBatch(cfgFail, ITERATIONS, "H_Machine_Fail", csvFile, 8000);
 
-    // --- 5. Min-Till Analysis (The New Bottleneck Question) ---
-    // I: Min-Till High Load
-    // Can Min-Till save the day for 8 fields without buying extra tractors?
+    // --- 5. Min-Till Analysis ---
+    
     SimConfig cfgMinTill;
     cfgMinTill.countFields = 8;
-    cfgMinTill.countMachineMinTill = 1; // Enables Min-Till path (skips plow)
+    cfgMinTill.countMachineMinTill = 1; 
     RunBatch(cfgMinTill, ITERATIONS, "I_MinTill_HighLoad", csvFile, 9000);
 
-    // J: Min-Till Lean
-    // Can we run 8 fields with just 1 tractor if we skip plowing?
     SimConfig cfgMinTillLean;
     cfgMinTillLean.countFields = 8;
     cfgMinTillLean.countMachineMinTill = 1;
     cfgMinTillLean.countTractors = 1; 
     RunBatch(cfgMinTillLean, ITERATIONS, "J_MinTill_Lean", csvFile, 10000);
 
-    // --- 6. Incremental Scaling & Isolation ---
-    // K: Medium Load (6 Fields) - Finding the tipping point between 4 and 8
+    // --- 6. Incremental Scaling ---
+    
     SimConfig cfgMedium;
     cfgMedium.countFields = 6;
     RunBatch(cfgMedium, ITERATIONS, "K_Medium_Load", csvFile, 11000);
 
-    // L: Tractor Only Boost (8 Fields) - 3 Tractors, Default Workers
     SimConfig cfgTractorsOnly;
     cfgTractorsOnly.countFields = 8;
     cfgTractorsOnly.countTractors = 3;
     RunBatch(cfgTractorsOnly, ITERATIONS, "L_More_Tractors", csvFile, 12000);
 
-    // M: Worker Only Boost (8 Fields) - 2 Tractors, Full Shift 2
     SimConfig cfgWorkersOnly;
     cfgWorkersOnly.countFields = 8;
     cfgWorkersOnly.countWorkersShift2 = 2;
     RunBatch(cfgWorkersOnly, ITERATIONS, "M_More_Workers", csvFile, 13000);
 
     // --- 7. Resilience Stress Tests ---
-    // N: Heavy Shift vs Bad Weather - Can the "F" config survive 25% weather?
+    
     SimConfig cfgHeavyWeather;
     cfgHeavyWeather.countFields = 8;
     cfgHeavyWeather.countWorkersShift2 = 2;
@@ -777,7 +692,6 @@ int main() {
     cfgHeavyWeather.probWorkableDay = 0.25;
     RunBatch(cfgHeavyWeather, ITERATIONS, "N_Heavy_Resilience", csvFile, 14000);
 
-    // O: Min-Till vs Bad Weather - Is speed the answer to bad weather?
     SimConfig cfgMinTillWeather;
     cfgMinTillWeather.countFields = 8;
     cfgMinTillWeather.countMachineMinTill = 1;
@@ -785,7 +699,7 @@ int main() {
     RunBatch(cfgMinTillWeather, ITERATIONS, "O_MinTill_Resilience", csvFile, 15000);
 
     // --- 8. Extreme & Special Cases ---
-    // P: The "Super Farm" - 12 Fields, High Tech, High Labor
+    
     SimConfig cfgSuperFarm;
     cfgSuperFarm.countFields = 12;
     cfgSuperFarm.countTractors = 4;
@@ -793,8 +707,6 @@ int main() {
     cfgSuperFarm.countMachineMinTill = 1; 
     RunBatch(cfgSuperFarm, ITERATIONS, "P_Super_Farm", csvFile, 16000);
 
-    // Q: Sower Redemption - 8 Fields, Bad Weather, 2 Sowers
-    // Does the extra sower help when the weather window is tiny?
     SimConfig cfgSowerRedemption;
     cfgSowerRedemption.countFields = 8;
     cfgSowerRedemption.probWorkableDay = 0.25;
