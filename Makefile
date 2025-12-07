@@ -4,22 +4,18 @@ CFLAGS = -Wall -O2
 # Libraries to link:
 LIBS = -lsimlib -lm
 
-# Directory for the executable
-BIN_DIR = bin
-
-TARGET = $(BIN_DIR)/simulation
+TARGET = simulation
 RESULTS = out/test_results.csv
 
-SOURCES = main.cpp
+SOURCES = src/main.cpp
 
 # Phony targets ensure make doesn't confuse these command names with file names
 .PHONY: all run clean
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES) config.h farm_classes.h
+$(TARGET): $(SOURCES)
 	# Create the bin directory if it doesn't exist
-	mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCES) $(LIBS)
 
 run: $(TARGET)
@@ -28,7 +24,7 @@ run: $(TARGET)
 
 clean:
 	# -r removes the directory recursively
-	rm -rf $(BIN_DIR) farm_simulation_report.txt out
+	rm -rf $(BIN_DIR) farm_simulation_report.txt out simulation
 
 print-results-interactive:
 	@echo "\n$(RESULTS):"
