@@ -26,7 +26,7 @@ void InitLookupArrays(SimulationContext& ctx) {
     for(int i=0; i<NUM_PHASES; ++i) ctx.machineRequirements[i] = nullptr;
 
     // Mapping Phases to Machines
-    ctx.machineRequirements[PHASE_MIN_TILL]  = ctx.pMachineFertilizer; // Assuming logic from original code
+    ctx.machineRequirements[PHASE_MIN_TILL]  = ctx.pMachineFertilizer;
     ctx.phaseDurations[PHASE_MIN_TILL]       = Defaults::TIME_FERTILIZE; 
 
     ctx.machineRequirements[PHASE_STUBBLE]   = ctx.pMachinePlow;
@@ -38,7 +38,6 @@ void InitLookupArrays(SimulationContext& ctx) {
     ctx.machineRequirements[PHASE_PREP]      = ctx.pMachineFertilizer;
     ctx.phaseDurations[PHASE_PREP]           = Defaults::TIME_FERTILIZE;
     
-    // Note: The phase named 'FERTILIZE' currently maps to Sower Logic in this model
     ctx.machineRequirements[PHASE_FERTILIZE] = ctx.pMachineSower;
     ctx.phaseDurations[PHASE_FERTILIZE]      = ctx.cfg.sowingTime; 
     
@@ -104,7 +103,7 @@ void UpdateFieldEconomics(SimulationContext& ctx, Field* field, double workTime,
     }
 
     // Cost calculations
-    double workerCost = workTime * ctx.cfg.costWorkerPerHour; // Tracked globally in totalWorkerWages
+    double workerCost = workTime * ctx.cfg.costWorkerPerHour;
     double machineCost = workTime * ctx.cfg.costTractorPerHour;
     
     field->accumulatedCostCZK += (workerCost + machineCost);

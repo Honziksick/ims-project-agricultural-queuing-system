@@ -86,7 +86,6 @@ struct SimStats {
 
 /**
  * Holds the entire dynamic state of one simulation run.
- * Replaces loose global variables.
  */
 struct SimulationContext {
     // Config for this run
