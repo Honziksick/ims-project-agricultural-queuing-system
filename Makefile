@@ -8,8 +8,12 @@ LIBS = -lsimlib -lm
 BIN_DIR = bin
 
 TARGET = $(BIN_DIR)/simulation
+RESULTS = out/test_results.csv
 
 SOURCES = main.cpp
+
+# Phony targets ensure make doesn't confuse these command names with file names
+.PHONY: all run clean
 
 all: $(TARGET)
 
@@ -20,10 +24,16 @@ $(TARGET): $(SOURCES) config.h farm_classes.h
 
 run: $(TARGET)
 	./$(TARGET)
+	@$(MAKE) print-results
 
 clean:
 	# -r removes the directory recursively
 	rm -rf $(BIN_DIR) farm_simulation_report.txt out
 
-# Phony targets ensure make doesn't confuse these command names with file names
-.PHONY: all run clean
+print-results-interactive:
+	@echo "\n$(RESULTS):"
+	@cat $(RESULTS) | column -t -s, | less -S
+
+print-results:
+	@echo "\n$(RESULTS):"
+	@cat $(RESULTS) | column -t -s,
