@@ -611,107 +611,84 @@ int main() {
 
     int ITERATIONS = 1000;
 
-    // --- 1. Baseline & Bottleneck Identification ---
+    // --- 1. Baseline & Scaling Analysis ---
+    // Objective: Observe system behavior as field count increases (4 -> 6 -> 8).
     
     SimConfig cfgBaseline; 
-    RunBatch(cfgBaseline, ITERATIONS, "A_Baseline", csvFile, 1000);
+    RunBatch(cfgBaseline, ITERATIONS, "A_Baseline_4F", csvFile, 1000);
+
+    SimConfig cfgMedium;
+    cfgMedium.countFields = 6;
+    RunBatch(cfgMedium, ITERATIONS, "B_Medium_6F", csvFile, 2000);
 
     SimConfig cfgHighLoad;
     cfgHighLoad.countFields = 8;
-    RunBatch(cfgHighLoad, ITERATIONS, "B_High_Load", csvFile, 2000);
+    RunBatch(cfgHighLoad, ITERATIONS, "C_High_8F", csvFile, 3000);
 
-    // --- 2. Sowing Machine Analysis ---
+    // --- 2. Bottleneck Identification (Classic Tech) ---
+    // Objective: Identify which machine causes the failure at 8 fields.
     
+    // Hypothesis A: Sower is the bottleneck
     SimConfig cfgDoubleSower;
     cfgDoubleSower.countFields = 8;
     cfgDoubleSower.countMachineSower = 2;
-    RunBatch(cfgDoubleSower, ITERATIONS, "C_Double_Sower", csvFile, 3000);
+    RunBatch(cfgDoubleSower, ITERATIONS, "D_Double_Sower", csvFile, 4000);
 
-    SimConfig cfgFastSower;
-    cfgFastSower.countFields = 8;
-    cfgFastSower.sowingTime = Defaults::TIME_SOW * 0.7; 
-    RunBatch(cfgFastSower, ITERATIONS, "D_Faster_Sower", csvFile, 4000);
+    // Hypothesis B: Plow and Prep are the bottlenecks (New Test)
+    SimConfig cfgDoublePlowPrep;
+    cfgDoublePlowPrep.countFields = 8;
+    cfgDoublePlowPrep.countMachinePlow = 2;
+    cfgDoublePlowPrep.countMachinePrep = 2;
+    RunBatch(cfgDoublePlowPrep, ITERATIONS, "E_Double_PlowPrep", csvFile, 5000);
 
-    // --- 3. Line Configuration & Labor ---
+    // --- 3. Min-Till Analysis ---
+    // Objective: Evaluate alternative soil processing technology.
+    
+    SimConfig cfgMinTill;
+    cfgMinTill.countFields = 8;
+    cfgMinTill.countMachineMinTill = 1; 
+    RunBatch(cfgMinTill, ITERATIONS, "F_MinTill_High", csvFile, 6000);
+
+    // Realistic Min-Till Cost (New Test)
+    // Min-Till saves fuel/time but requires more chemicals (herbicides).
+    SimConfig cfgMinTillReal;
+    cfgMinTillReal.countFields = 8;
+    cfgMinTillReal.countMachineMinTill = 1;
+    cfgMinTillReal.costChemicalsPerHa = Defaults::COST_CHEMICALS_PER_HA * 1.5; // +50% chemical cost
+    RunBatch(cfgMinTillReal, ITERATIONS, "G_MinTill_RealCost", csvFile, 7000);
+
+    // --- 4. Line Configuration & Labor ---
+    // Objective: Test resource allocation limits (Lean vs Heavy).
     
     SimConfig cfgLean;
     cfgLean.countTractors = 1;
-    RunBatch(cfgLean, ITERATIONS, "E_Lean_Ops", csvFile, 5000);
+    RunBatch(cfgLean, ITERATIONS, "H_Lean_Ops", csvFile, 8000);
 
     SimConfig cfgHeavy;
     cfgHeavy.countFields = 8;
     cfgHeavy.countWorkersShift2 = 2; 
     cfgHeavy.countTractors = 3;      
-    RunBatch(cfgHeavy, ITERATIONS, "F_Heavy_Shift", csvFile, 6000);
+    RunBatch(cfgHeavy, ITERATIONS, "I_Heavy_Shift", csvFile, 9000);
 
-    // --- 4. Stochastic Events (Risk Analysis) ---
+    // --- 5. Stochastic Events (Risk Analysis) ---
+    // Objective: Test resilience against weather and failures.
     
     SimConfig cfgWeather;
     cfgWeather.probWorkableDay = 0.25; 
-    RunBatch(cfgWeather, ITERATIONS, "G_Bad_Weather", csvFile, 7000);
+    RunBatch(cfgWeather, ITERATIONS, "J_Risk_Weather", csvFile, 10000);
 
     SimConfig cfgFail;
     cfgFail.probTractorUnavailable = 0.60; 
-    RunBatch(cfgFail, ITERATIONS, "H_Machine_Fail", csvFile, 8000);
+    RunBatch(cfgFail, ITERATIONS, "K_Risk_MachineFail", csvFile, 11000);
 
-    // --- 5. Min-Till Analysis ---
-    
-    SimConfig cfgMinTill;
-    cfgMinTill.countFields = 8;
-    cfgMinTill.countMachineMinTill = 1; 
-    RunBatch(cfgMinTill, ITERATIONS, "I_MinTill_HighLoad", csvFile, 9000);
-
-    SimConfig cfgMinTillLean;
-    cfgMinTillLean.countFields = 8;
-    cfgMinTillLean.countMachineMinTill = 1;
-    cfgMinTillLean.countTractors = 1; 
-    RunBatch(cfgMinTillLean, ITERATIONS, "J_MinTill_Lean", csvFile, 10000);
-
-    // --- 6. Incremental Scaling ---
-    
-    SimConfig cfgMedium;
-    cfgMedium.countFields = 6;
-    RunBatch(cfgMedium, ITERATIONS, "K_Medium_Load", csvFile, 11000);
-
-    SimConfig cfgTractorsOnly;
-    cfgTractorsOnly.countFields = 8;
-    cfgTractorsOnly.countTractors = 3;
-    RunBatch(cfgTractorsOnly, ITERATIONS, "L_More_Tractors", csvFile, 12000);
-
-    SimConfig cfgWorkersOnly;
-    cfgWorkersOnly.countFields = 8;
-    cfgWorkersOnly.countWorkersShift2 = 2;
-    RunBatch(cfgWorkersOnly, ITERATIONS, "M_More_Workers", csvFile, 13000);
-
-    // --- 7. Resilience Stress Tests ---
-    
-    SimConfig cfgHeavyWeather;
-    cfgHeavyWeather.countFields = 8;
-    cfgHeavyWeather.countWorkersShift2 = 2;
-    cfgHeavyWeather.countTractors = 3;
-    cfgHeavyWeather.probWorkableDay = 0.25;
-    RunBatch(cfgHeavyWeather, ITERATIONS, "N_Heavy_Resilience", csvFile, 14000);
-
-    SimConfig cfgMinTillWeather;
-    cfgMinTillWeather.countFields = 8;
-    cfgMinTillWeather.countMachineMinTill = 1;
-    cfgMinTillWeather.probWorkableDay = 0.25;
-    RunBatch(cfgMinTillWeather, ITERATIONS, "O_MinTill_Resilience", csvFile, 15000);
-
-    // --- 8. Extreme & Special Cases ---
+    // --- 6. Extreme & Special Cases ---
     
     SimConfig cfgSuperFarm;
     cfgSuperFarm.countFields = 12;
     cfgSuperFarm.countTractors = 4;
     cfgSuperFarm.countWorkersShift2 = 2;
     cfgSuperFarm.countMachineMinTill = 1; 
-    RunBatch(cfgSuperFarm, ITERATIONS, "P_Super_Farm", csvFile, 16000);
-
-    SimConfig cfgSowerRedemption;
-    cfgSowerRedemption.countFields = 8;
-    cfgSowerRedemption.probWorkableDay = 0.25;
-    cfgSowerRedemption.countMachineSower = 2;
-    RunBatch(cfgSowerRedemption, ITERATIONS, "Q_Sower_Redemption", csvFile, 17000);
+    RunBatch(cfgSuperFarm, ITERATIONS, "L_Super_Farm", csvFile, 12000);
 
     csvFile.close();
     std::cout << "\nAnalysis Complete. Check 'out/test_results.csv' for full details.\n";
