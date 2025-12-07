@@ -7,7 +7,7 @@ LIBS = -lsimlib -lm
 # Directory for the executable
 BIN_DIR = bin
 
-TARGET = $(BIN_DIR)/farm_sim
+TARGET = $(BIN_DIR)/simulation
 
 SOURCES = main.cpp
 

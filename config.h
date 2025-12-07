@@ -37,7 +37,7 @@ namespace Defaults {
 
     // --- Resource Counts ---
     constexpr int COUNT_WORKERS_SHIFT_1 = 2;
-    constexpr int COUNT_WORKERS_SHIFT_2 = 1;
+    constexpr int COUNT_WORKERS_SHIFT_2 = 0;
     constexpr int COUNT_TRACTORS = 2;
     constexpr int COUNT_FIELDS = 4;
 
@@ -52,8 +52,8 @@ namespace Defaults {
 
     // --- Durations & Probabilities ---
     constexpr double SHIFT_DURATION = 10.0 * HOUR;
-    constexpr double REST_DURATION = 14.0 * HOUR;
-    constexpr double SHIFT_2_START_OFFSET = 0.0; 
+    constexpr double REST_DURATION = 24 * HOUR - SHIFT_DURATION;
+    constexpr double SHIFT_2_START_OFFSET = SHIFT_DURATION + 0.1 * HOUR; 
 
     constexpr double PROB_TRACTOR_UNAVAILABLE = 0.30;
     constexpr double PROB_REPAIR_NEEDED = 0.28;

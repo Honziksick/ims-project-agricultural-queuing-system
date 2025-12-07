@@ -151,7 +151,7 @@ bool FindBestJob(SimulationContext& ctx, Field*& outField, Store*& outMachine, d
 
     if (candidates.empty()) return false;
 
-    // Prioritize older phases (FIFO logic basically)
+    // Prioritize fields in earlier phases (phase-based priority)
     std::sort(candidates.begin(), candidates.end(), [](Field* a, Field* b) {
         return a->currentPhase < b->currentPhase;
     });
